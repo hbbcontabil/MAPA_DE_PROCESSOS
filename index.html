@@ -1,0 +1,2484 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa de Processos & Automação — HBB</title>
+<style>
+  html,body{margin:0;padding:0;background:#f3efe6;}
+  #root{min-height:100vh;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js"></script>
+<script type="text/babel" data-presets="react">
+
+const { useState, useEffect, useRef } = React;
+const SB_URL = window.SUPABASE_URL || "";
+const SB_KEY = window.SUPABASE_ANON_KEY || "";
+const CLIENT_ID = Math.random().toString(36).slice(2);
+let _sb = null, _remote = false;
+try {
+  if (SB_URL && SB_KEY && window.supabase && window.supabase.createClient) {
+    _sb = window.supabase.createClient(SB_URL, SB_KEY);
+    _remote = true;
+  }
+} catch (e) { console.error("Supabase init falhou:", e); }
+const _TABLE = "mapa_estado";
+let _saveTimer = null, _pending = null;
+async function _flush() {
+  if (!_pending || !_sb) return;
+  const p = _pending; _pending = null;
+  try {
+    const { error } = await _sb.from(_TABLE).upsert({ id: p.key, data: JSON.parse(p.value), updated_by: CLIENT_ID, updated_at: new Date().toISOString() });
+    if (error) console.error("Supabase save:", error);
+  } catch (e) { console.error("Supabase save:", e); }
+}
+window.__remote = _remote;
+window.storage = {
+  get: async (k) => {
+    if (_remote) {
+      try {
+        const { data, error } = await _sb.from(_TABLE).select("data").eq("id", k).maybeSingle();
+        if (error) throw error;
+        return data ? { key: k, value: JSON.stringify(data.data) } : null;
+      } catch (e) { console.error("Supabase get:", e); return null; }
+    }
+    const v = localStorage.getItem(k); return v == null ? null : { key: k, value: v };
+  },
+  set: async (k, v) => {
+    if (_remote) { _pending = { key: k, value: v }; clearTimeout(_saveTimer); _saveTimer = setTimeout(_flush, 700); return { key: k, value: v }; }
+    localStorage.setItem(k, v); return { key: k, value: v };
+  },
+  delete: async (k) => { if (!_remote) localStorage.removeItem(k); return { key: k, deleted: true }; },
+  list: async () => ({ keys: [] }),
+};
+window.__subscribeRemote = (cb) => {
+  if (!_remote) return () => {};
+  const ch = _sb.channel("mapa-rt")
+    .on("postgres_changes", { event: "*", schema: "public", table: _TABLE }, (payload) => {
+      if (payload.new && payload.new.updated_by !== CLIENT_ID) cb();
+    })
+    .subscribe();
+  return () => { try { _sb.removeChannel(ch); } catch (e) {} };
+};
+
+const ICON_PATHS = {"Plus": "<line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/><line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/>", "Trash2": "<polyline points=\"3 6 5 6 21 6\"/><path d=\"M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6\"/><path d=\"M10 11v6\"/><path d=\"M14 11v6\"/><path d=\"M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2\"/>", "ChevronDown": "<polyline points=\"6 9 12 15 18 9\"/>", "ChevronUp": "<polyline points=\"18 15 12 9 6 15\"/>", "AlertTriangle": "<path d=\"M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z\"/><line x1=\"12\" y1=\"9\" x2=\"12\" y2=\"13\"/><line x1=\"12\" y1=\"17\" x2=\"12.01\" y2=\"17\"/>", "Lightbulb": "<path d=\"M9 18h6\"/><path d=\"M10 22h4\"/><path d=\"M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 1 0 6 8c0 1 .23 2.23 1.5 3.5.76.76 1.23 1.52 1.41 2.5\"/>", "ArrowDown": "<line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/><polyline points=\"19 12 12 19 5 12\"/>", "Download": "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"7 10 12 15 17 10\"/><line x1=\"12\" y1=\"15\" x2=\"12\" y2=\"3\"/>", "Upload": "<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"17 8 12 3 7 8\"/><line x1=\"12\" y1=\"3\" x2=\"12\" y2=\"15\"/>", "Printer": "<polyline points=\"6 9 6 2 18 2 18 9\"/><path d=\"M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2\"/><rect x=\"6\" y=\"14\" width=\"12\" height=\"8\"/>", "GripVertical": "<circle cx=\"9\" cy=\"6\" r=\"1\"/><circle cx=\"9\" cy=\"12\" r=\"1\"/><circle cx=\"9\" cy=\"18\" r=\"1\"/><circle cx=\"15\" cy=\"6\" r=\"1\"/><circle cx=\"15\" cy=\"12\" r=\"1\"/><circle cx=\"15\" cy=\"18\" r=\"1\"/>", "Layers": "<polygon points=\"12 2 2 7 12 12 22 7 12 2\"/><polyline points=\"2 17 12 22 22 17\"/><polyline points=\"2 12 12 17 22 12\"/>", "Workflow": "<rect x=\"3\" y=\"3\" width=\"8\" height=\"8\" rx=\"2\"/><rect x=\"13\" y=\"13\" width=\"8\" height=\"8\" rx=\"2\"/><path d=\"M11 7h3a2 2 0 0 1 2 2v4\"/>", "Zap": "<polygon points=\"13 2 3 14 12 14 11 22 21 10 12 10 13 2\"/>", "Gauge": "<path d=\"M12 14 16 10\"/><path d=\"M3.34 19a10 10 0 1 1 17.32 0\"/>", "X": "<line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/>", "Pencil": "<path d=\"M12 20h9\"/><path d=\"M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z\"/>", "Check": "<polyline points=\"20 6 9 17 4 12\"/>", "GitBranch": "<line x1=\"6\" y1=\"3\" x2=\"6\" y2=\"15\"/><circle cx=\"18\" cy=\"6\" r=\"3\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><path d=\"M18 9a9 9 0 0 1-9 9\"/>", "List": "<line x1=\"8\" y1=\"6\" x2=\"21\" y2=\"6\"/><line x1=\"8\" y1=\"12\" x2=\"21\" y2=\"12\"/><line x1=\"8\" y1=\"18\" x2=\"21\" y2=\"18\"/><line x1=\"3\" y1=\"6\" x2=\"3.01\" y2=\"6\"/><line x1=\"3\" y1=\"12\" x2=\"3.01\" y2=\"12\"/><line x1=\"3\" y1=\"18\" x2=\"3.01\" y2=\"18\"/>", "Share2": "<circle cx=\"18\" cy=\"5\" r=\"3\"/><circle cx=\"6\" cy=\"12\" r=\"3\"/><circle cx=\"18\" cy=\"19\" r=\"3\"/><line x1=\"8.59\" y1=\"13.51\" x2=\"15.42\" y2=\"17.49\"/><line x1=\"15.41\" y1=\"6.51\" x2=\"8.59\" y2=\"10.49\"/>", "ArrowUpToLine": "<path d=\"M5 3h14\"/><path d=\"m18 13-6-6-6 6\"/><path d=\"M12 7v14\"/>"};
+
+function makeIcon(name){
+  return function({size=16, className}){
+    return React.createElement('svg', {
+      width:size, height:size, viewBox:'0 0 24 24', fill:'none',
+      stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round',
+      className: className, dangerouslySetInnerHTML:{__html: ICON_PATHS[name]}
+    });
+  };
+}
+const Plus = makeIcon('Plus');
+const Trash2 = makeIcon('Trash2');
+const ChevronDown = makeIcon('ChevronDown');
+const ChevronUp = makeIcon('ChevronUp');
+const AlertTriangle = makeIcon('AlertTriangle');
+const Lightbulb = makeIcon('Lightbulb');
+const ArrowDown = makeIcon('ArrowDown');
+const Download = makeIcon('Download');
+const Upload = makeIcon('Upload');
+const Printer = makeIcon('Printer');
+const GripVertical = makeIcon('GripVertical');
+const Layers = makeIcon('Layers');
+const Workflow = makeIcon('Workflow');
+const Zap = makeIcon('Zap');
+const Gauge = makeIcon('Gauge');
+const X = makeIcon('X');
+const Pencil = makeIcon('Pencil');
+const Check = makeIcon('Check');
+const GitBranch = makeIcon('GitBranch');
+const List = makeIcon('List');
+const Share2 = makeIcon('Share2');
+const ArrowUpToLine = makeIcon('ArrowUpToLine');
+
+/* ============================ helpers ============================ */
+const uid = () =>
+  (crypto?.randomUUID?.() || "id" + Math.random().toString(36).slice(2, 10));
+
+const brl = (v) => (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+const fmtData = (d) => d ? new Date(d).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+
+const SEV = {
+  baixo:   { label: "Baixo",    cor: "#3f9e6b" },
+  medio:   { label: "Médio",    cor: "#d4a017" },
+  alto:    { label: "Alto",     cor: "#e07a3f" },
+  critico: { label: "Crítico",  cor: "#c0392b" },
+};
+const SEV_ORDER = ["critico", "alto", "medio", "baixo"];
+
+const MATUR = {
+  manual: { label: "Manual",        cor: "#c0392b" },
+  semi:   { label: "Semi-auto",     cor: "#d4a017" },
+  auto:   { label: "Automatizado",  cor: "#3f9e6b" },
+};
+const MATUR_ORDER = ["manual", "semi", "auto"];
+
+const STATUS = {
+  ideia:      { label: "Ideia",          cor: "#8a8578" },
+  analise:    { label: "Em análise",     cor: "#1f6f8b" },
+  andamento:  { label: "Em andamento",   cor: "#7a4e7e" },
+  teste:      { label: "Fase de teste",  cor: "#d4a017" },
+  concluido:  { label: "Concluído",      cor: "#3f9e6b" },
+};
+const STATUS_ORDER = ["ideia", "analise", "andamento", "teste", "concluido"];
+const STATUS_MIG = { dev: "andamento", implantado: "concluido" };
+const fixStatus = (s) => (STATUS[s] ? s : (STATUS_MIG[s] || "ideia"));
+
+const SETOR_CORES = ["#14564a", "#1f6f8b", "#7a4e7e", "#a8612f", "#4a5d23", "#8c3b3b"];
+
+const STORAGE_KEY = "hbb-mapa-processos-v1";
+
+/* normalização: garante campos novos em dados antigos/seed */
+const normEtapa = (e) => {
+  const status = fixStatus(e.status || "ideia");
+  const historico = (Array.isArray(e.historico) && e.historico.length)
+    ? e.historico.map((h) => ({ status: fixStatus(h.status), data: h.data || null }))
+    : [{ status, data: null }];
+  return {
+    tipo: "processo", principalLabel: "Sim", desvio: null,
+    horasMes: 0, maturidade: "manual", status: "ideia", ...e,
+    status, historico,
+    ideias: (e.ideias || []).map((i) => ({ status: "ideia", responsavelIdeia: "", prazo: "", horasEconomia: 0, ...i, status: fixStatus(i.status) })),
+  };
+};
+const normalize = (d) => ({
+  custoHora: 50, ...d,
+  setores: (d.setores || []).map((s) => ({ ...s, etapas: (s.etapas || []).map(normEtapa) })),
+});
+
+
+/* ============================ seed ============================ */
+const SEED = {
+  "custoHora": 50,
+  "setores": [
+    {
+      "id": "n1",
+      "nome": "Contábil",
+      "cor": "#1f6f8b",
+      "etapas": [
+        {
+          "id": "n2",
+          "nome": "Pré-auditoria automática antes do fechamento",
+          "descricao": "Checklist automatizado que identifica inconsistências nos lançamentos antes de encaminhar ao auditor, reduzindo retrabalho e acelerando o fechamento.",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "medio",
+            "descricao": "Retrabalho e atraso no fechamento por inconsistências detectadas tarde."
+          },
+          "ideias": [
+            {
+              "id": "n3",
+              "titulo": "Pré-auditoria automática de fechamento",
+              "descricao": "Automação + auditoria.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n4",
+          "nome": "Correção de rubricas e lançamentos",
+          "descricao": "Revisão e padronização de rubricas, identificando lançamentos divergentes ou fora do plano de contas vigente, com sugestão de correção.",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n5",
+              "titulo": "Ferramenta de correção/padronização de rubricas",
+              "descricao": "Ferramenta / Excel.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n6",
+          "nome": "Documentação interativa para o cliente",
+          "descricao": "Material de orientação dinâmico e interativo, substituindo manuais estáticos por guias navegáveis de consulta simplificada.",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n7",
+              "titulo": "Guia interativo de orientação ao cliente",
+              "descricao": "Ferramenta.",
+              "impacto": 3,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n8",
+          "nome": "Cálculo do LALUR (apoio à equipe)",
+          "descricao": "Planilha/módulo de apoio à apuração do LALUR (Lucro Real), com campos orientados e validação das adições e exclusões fiscais.",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n9",
+              "titulo": "Módulo de apoio ao LALUR",
+              "descricao": "Excel / automação.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n10",
+          "nome": "Apresentação automática ao cliente",
+          "descricao": "Geração automatizada de apresentações periódicas, consolidando indicadores e relatórios contábeis em layout padronizado e profissional.",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n11",
+              "titulo": "Geração automática de apresentação gerencial",
+              "descricao": "Automação.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n12",
+          "nome": "Balancete em Excel / leitura de extrato",
+          "descricao": "Estruturação do balancete de verificação em Excel com leitura e organização automática de extratos manuais (PDF ou digitalizado).",
+          "responsavel": "Contábil",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "medio",
+            "descricao": "Leitura manual de extratos recebidos dos clientes."
+          },
+          "ideias": [
+            {
+              "id": "n13",
+              "titulo": "Balancete em Excel + leitura automática de extrato",
+              "descricao": "Excel / automação.",
+              "impacto": 4,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n14",
+      "nome": "Fiscal",
+      "cor": "#14564a",
+      "etapas": [
+        {
+          "id": "n15",
+          "nome": "Apuração automática fiscal",
+          "descricao": "Automação da apuração fiscal periódica para reduzir o tempo de execução, com foco em agilidade e confiabilidade das obrigações.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "alto",
+            "descricao": "Apuração periódica consome muito tempo de execução da equipe."
+          },
+          "ideias": [
+            {
+              "id": "n16",
+              "titulo": "Apuração fiscal automatizada",
+              "descricao": "Alta prioridade — automação.",
+              "impacto": 5,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "analise",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n17",
+          "nome": "Relatório final de CFOP e impostos",
+          "descricao": "Relatório consolidado dos CFOPs utilizados e impostos incidentes por operação, base para conferência e auditoria fiscal.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n18",
+              "titulo": "Relatório consolidado de CFOP × impostos",
+              "descricao": "Auditoria / ferramenta.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n19",
+          "nome": "Lançamento e estorno de impostos",
+          "descricao": "Rotina de lançamento e retirada de impostos no contábil, com controle de despesas administrativas e receitas para PIS/COFINS.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n20",
+              "titulo": "Automação de lançamento/estorno de impostos",
+              "descricao": "Automação.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n21",
+          "nome": "Conferência de notas de prefeituras",
+          "descricao": "Validação das NFS-e importadas de portais de prefeituras, cruzando com os lançamentos do sistema para identificar divergências.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "medio",
+            "descricao": "Divergências entre notas de prefeitura e lançamentos."
+          },
+          "ideias": [
+            {
+              "id": "n22",
+              "titulo": "Validação de NFS-e importadas de prefeituras",
+              "descricao": "Ferramenta / Excel.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n23",
+          "nome": "Acumuladores — relatório p/ módulo agro",
+          "descricao": "Relatório de acumuladores para exportação e integração com o módulo agrícola, otimizando o fluxo entre fiscal e agro.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n24",
+              "titulo": "Relatório de acumuladores p/ módulo agro",
+              "descricao": "Automação / ferramenta.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n25",
+          "nome": "Separação de monofásicos PIS/COFINS",
+          "descricao": "Triagem automática dos itens sujeitos à tributação monofásica de PIS/COFINS, eliminando a separação manual.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "medio",
+            "descricao": "Separação manual de monofásicos consome tempo (retrabalho)."
+          },
+          "ideias": [
+            {
+              "id": "n26",
+              "titulo": "Triagem automática de monofásicos PIS/COFINS",
+              "descricao": "Automação — reduz retrabalho.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n27",
+          "nome": "Base de consulta fiscal — CBS/IBS (reforma)",
+          "descricao": "Repositório de consulta com as regras vigentes de CBS e IBS, com envio de informativos e cartilhas personalizadas a clientes.",
+          "responsavel": "Fiscal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n28",
+              "titulo": "Base inteligente de consulta CBS/IBS",
+              "descricao": "Ferramenta / comunidade.",
+              "impacto": 4,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n29",
+      "nome": "RH / Departamento Pessoal",
+      "cor": "#7a4e7e",
+      "etapas": [
+        {
+          "id": "n30",
+          "nome": "Programação de férias (alerta de férias em dobro)",
+          "descricao": "Leitura automática do relatório de férias, identificando colaboradores com período vencido e gerando notificações em volume para múltiplos clientes.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "alto",
+            "descricao": "Férias em dobro: colaboradores com período vencido detectados manualmente."
+          },
+          "ideias": [
+            {
+              "id": "n31",
+              "titulo": "[P1] Alertas automáticos de férias em dobro",
+              "descricao": "Prioridade 1 — automação, multiempresa.",
+              "impacto": 5,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "analise",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n32",
+          "nome": "Três Carneiros — reais → horas",
+          "descricao": "Automação da planilha do cliente Três Carneiros que recebe valores em reais e precisa convertê-los em horas trabalhadas para a folha.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n33",
+              "titulo": "[P2] Conversor reais → horas (Três Carneiros)",
+              "descricao": "Prioridade 2 — Excel.",
+              "impacto": 4,
+              "esforco": 2,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n34",
+          "nome": "Leitura de ponto (manual + automático)",
+          "descricao": "Leitura de registros de ponto (entrada/saída), resumo e relatório, e geração do arquivo de importação para o Domínio. Suporte a múltiplas empresas.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n35",
+              "titulo": "[P3] Leitor de ponto com exportação p/ Domínio",
+              "descricao": "Prioridade 3 — automação, multiempresa.",
+              "impacto": 5,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n36",
+          "nome": "Auditoria de folha (eSocial e CLT)",
+          "descricao": "Auditoria da folha manual com base nas regras do eSocial e CLT, reduzindo inconsistências antes do envio ao governo.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n37",
+              "titulo": "[P4] Auditoria de folha eSocial/CLT",
+              "descricao": "Prioridade 4 — auditoria.",
+              "impacto": 4,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n38",
+          "nome": "Power BI — folha em tempo real (Domínio)",
+          "descricao": "Dashboard em Power BI com acesso às informações da folha em tempo real, usando dados do Domínio, para acompanhamento da diretoria.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n39",
+              "titulo": "Dashboard Power BI da folha (diretoria)",
+              "descricao": "Power BI — diretoria.",
+              "impacto": 4,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n40",
+          "nome": "Retenções de NF — FUNRURAL e Fator R",
+          "descricao": "Cálculo e conferência das retenções sobre notas fiscais, incluindo FUNRURAL (produtor rural) e apuração do Fator R para enquadramento.",
+          "responsavel": "RH",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n41",
+              "titulo": "Cálculo de retenções FUNRURAL / Fator R",
+              "descricao": "Automação / cálculo.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n42",
+      "nome": "Financeiro / BPO",
+      "cor": "#a8612f",
+      "etapas": [
+        {
+          "id": "n43",
+          "nome": "Conciliação de extratos e títulos diários",
+          "descricao": "Conciliação bancária diária cruzando extratos com títulos emitidos (boletos, PIX, transferências), reduzindo conferência manual.",
+          "responsavel": "BPO",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": {
+            "severidade": "alto",
+            "descricao": "Conciliação manual diária de extratos × títulos."
+          },
+          "ideias": [
+            {
+              "id": "n44",
+              "titulo": "Conciliação automática de extratos × títulos",
+              "descricao": "BPO — automação.",
+              "impacto": 5,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n45",
+          "nome": "PROCV / matching de extrato",
+          "descricao": "Lógica de matching (tipo PROCV) para associar linhas do extrato a títulos e favorecidos cadastrados, reduzindo o lançamento manual.",
+          "responsavel": "BPO",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n46",
+              "titulo": "Matching automático de extrato (PROCV)",
+              "descricao": "Excel / BPO.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n47",
+          "nome": "Importação de favorecidos via XML",
+          "descricao": "Criação e importação do cadastro de favorecidos a partir de XML, eliminando a entrada manual de dados.",
+          "responsavel": "BPO",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n48",
+              "titulo": "Importar favorecidos via XML",
+              "descricao": "Automação / XML.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n49",
+          "nome": "Emissão automática de notas fiscais",
+          "descricao": "Emissão de NF recorrentes ou em lote, aplicável ao BPO e à legalização, com base em dados cadastrais e contratos.",
+          "responsavel": "BPO",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n50",
+              "titulo": "Emissão automática/lote de NF",
+              "descricao": "BPO / legalização — automação.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n51",
+          "nome": "Controle de tempo de execução de tarefas",
+          "descricao": "Registro e análise do tempo gasto por ferramenta e tipo de tarefa, para identificar gargalos e otimizar a alocação da equipe.",
+          "responsavel": "BPO",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n52",
+              "titulo": "Controle de tempo por tarefa/ferramenta",
+              "descricao": "Gestão / BPO.",
+              "impacto": 4,
+              "esforco": 3,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n53",
+      "nome": "Ferramentas Transversais",
+      "cor": "#5a6b7a",
+      "etapas": [
+        {
+          "id": "n54",
+          "nome": "Chatbot interno + base de conhecimento",
+          "descricao": "Chatbot para responder consultas internas e enviar informativos fiscais/contábeis a clientes, alimentado por base de regras vigentes.",
+          "responsavel": "Transversal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n55",
+              "titulo": "Chatbot interno (IA) com base de conhecimento",
+              "descricao": "IA — transversal.",
+              "impacto": 5,
+              "esforco": 5,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n56",
+          "nome": "Renomeador de arquivos (padrão ISO)",
+          "descricao": "Renomeia arquivos automaticamente seguindo nomenclatura padronizada (estilo ISO), garantindo organização nos diretórios.",
+          "responsavel": "Transversal",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n57",
+              "titulo": "Renomeador de arquivos padrão ISO",
+              "descricao": "Transversal — automação.",
+              "impacto": 3,
+              "esforco": 2,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        },
+        {
+          "id": "n58",
+          "nome": "App de controle de ponto manual (diretoria)",
+          "descricao": "App para registro manual de ponto onde não há equipamento, gerando relatório formatado para a diretoria (Raphael e Fernando).",
+          "responsavel": "RH / Diretoria",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": [
+            {
+              "id": "n59",
+              "titulo": "App de ponto manual com relatório",
+              "descricao": "App — RH/diretoria.",
+              "impacto": 3,
+              "esforco": 4,
+              "horasEconomia": 0,
+              "status": "ideia",
+              "responsavelIdeia": "",
+              "prazo": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "n60",
+      "nome": "Consultor Financeiro",
+      "cor": "#9c6b1f",
+      "etapas": [
+        {
+          "id": "n61",
+          "nome": "Proposta de valor (pitch ao cliente)",
+          "descricao": "Além da entrega contábil tradicional, a consultoria financeira analisa os resultados da empresa, identifica pontos de melhoria, acompanha indicadores, projeta o caixa, avalia custos, despesas e margens, e apoia a tomada de decisão do empresário com informações claras e estratégicas.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n62",
+          "nome": "1. Transformar dados contábeis em decisão",
+          "descricao": "A contabilidade mostra o que aconteceu; a consultoria responde por que aconteceu, o que mudar e qual decisão tomar agora.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n63",
+          "nome": "2. Identificar onde a empresa perde dinheiro",
+          "descricao": "Localizar perdas e desperdícios financeiros.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n64",
+          "nome": "3. Apoiar o planejamento financeiro",
+          "descricao": "Apoiar o cliente no planejamento financeiro.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n65",
+          "nome": "4. Melhorar a gestão do caixa",
+          "descricao": "Melhorar a gestão do fluxo de caixa.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n66",
+          "nome": "5. Criar indicadores financeiros e gerenciais",
+          "descricao": "Definir e acompanhar indicadores financeiros e gerenciais.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n67",
+          "nome": "6. Análise de preço, margem e lucratividade",
+          "descricao": "Analisar preço, margem e lucratividade.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n68",
+          "nome": "7. Redução de custos e despesas",
+          "descricao": "Ajudar na redução de custos e despesas.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n69",
+          "nome": "8. Apoiar decisões estratégicas do empresário",
+          "descricao": "Apoiar as decisões estratégicas do empresário.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n70",
+          "nome": "9. Integrar contabilidade, financeiro e gestão",
+          "descricao": "Integrar contabilidade, financeiro e gestão.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        },
+        {
+          "id": "n71",
+          "nome": "10. Gerar valor para o escritório",
+          "descricao": "Gerar valor agregado para o escritório de contabilidade.",
+          "responsavel": "",
+          "ferramentas": [],
+          "tempo": "",
+          "horasMes": 0,
+          "maturidade": "manual",
+          "tipo": "processo",
+          "principalLabel": "Sim",
+          "desvio": null,
+          "gargalo": null,
+          "ideias": []
+        }
+      ]
+    }
+  ]
+};
+const seed = () => JSON.parse(JSON.stringify(SEED));
+
+/* ============================ root ============================ */
+function MapaProcessos() {
+  const [data, setData] = useState(null);
+  const [view, setView] = useState("processos");
+  const [activeSetor, setActiveSetor] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+  const [canvasTab, setCanvasTab] = useState("etapas");
+  const [pendingDel, setPendingDel] = useState(null);
+  const [filtro, setFiltro] = useState({ q: "", sev: "", mat: "", st: "" });
+  const [flowColor, setFlowColor] = useState("sev");
+  const [dragIdx, setDragIdx] = useState(null);
+  const [overIdx, setOverIdx] = useState(null);
+  const fileRef = useRef(null);
+
+  /* load + tempo real (Supabase) */
+  const loadData = async (preserve) => {
+    let loaded = null;
+    try {
+      if (typeof window !== "undefined" && window.storage) {
+        const r = await window.storage.get(STORAGE_KEY);
+        if (r?.value) loaded = JSON.parse(r.value);
+      }
+    } catch (e) { /* nada salvo ainda */ }
+    const fresh = !(loaded && loaded.setores);
+    const d = normalize(fresh ? seed() : loaded);
+    setData(d);
+    setActiveSetor((prev) => (preserve && prev ? prev : (d.setores[0]?.id || null)));
+    if (fresh) { try { window.storage?.set(STORAGE_KEY, JSON.stringify(d)); } catch (e) {} }
+    return d;
+  };
+  useEffect(() => { loadData(false); }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.__subscribeRemote) {
+      const unsub = window.__subscribeRemote(() => loadData(true));
+      return () => { try { unsub && unsub(); } catch (e) {} };
+    }
+  }, []);
+
+  /* persist */
+  const commit = (next) => {
+    setData(next);
+    (async () => {
+      try {
+        if (typeof window !== "undefined" && window.storage)
+          await window.storage.set(STORAGE_KEY, JSON.stringify(next), false);
+      } catch (e) { /* ignore */ }
+    })();
+  };
+
+  if (!data) return null;
+
+  /* ---- mutations ---- */
+  const setores = data.setores;
+  const setor = setores.find((s) => s.id === activeSetor) || setores[0];
+
+  const updSetores = (fn) => commit({ ...data, setores: fn(setores) });
+
+  const addSetor = () => {
+    const ns = { id: uid(), nome: "Novo setor", cor: SETOR_CORES[setores.length % SETOR_CORES.length], etapas: [] };
+    updSetores((s) => [...s, ns]);
+    setActiveSetor(ns.id);
+  };
+  const renameSetor = (id, nome) => updSetores((s) => s.map((x) => x.id === id ? { ...x, nome } : x));
+  const delSetor = (id) => {
+    const rest = setores.filter((x) => x.id !== id);
+    commit({ ...data, setores: rest });
+    if (activeSetor === id) setActiveSetor(rest[0]?.id || null);
+    setPendingDel(null);
+  };
+
+  const updEtapas = (setorId, fn) =>
+    updSetores((s) => s.map((x) => x.id === setorId ? { ...x, etapas: fn(x.etapas) } : x));
+
+  const addEtapa = (setorId) => {
+    const ne = { id: uid(), nome: "Nova etapa", descricao: "", responsavel: "", ferramentas: [], tempo: "", horasMes: 0, maturidade: "manual", status: "ideia", historico: [{ status: "ideia", data: new Date().toISOString() }], tipo: "processo", principalLabel: "Sim", desvio: null, gargalo: null, ideias: [] };
+    updEtapas(setorId, (e) => [...e, ne]);
+    setCanvasTab("etapas");
+    setExpanded(ne.id);
+  };
+  const updEtapa = (setorId, etapaId, patch) =>
+    updEtapas(setorId, (e) => e.map((x) => {
+      if (x.id !== etapaId) return x;
+      const next = { ...x, ...patch };
+      if (patch.status && patch.status !== x.status) {
+        const hist = Array.isArray(x.historico) ? [...x.historico] : [];
+        hist.push({ status: patch.status, data: new Date().toISOString() });
+        next.historico = hist;
+      }
+      return next;
+    }));
+  const updIdeia = (setorId, etapaId, ideiaId, patch) =>
+    updEtapas(setorId, (e) => e.map((x) => x.id === etapaId
+      ? { ...x, ideias: x.ideias.map((i) => i.id === ideiaId ? { ...i, ...patch } : i) } : x));
+  const setCusto = (v) => commit({ ...data, custoHora: Math.max(0, v || 0) });
+  const delEtapa = (setorId, etapaId) =>
+    updEtapas(setorId, (e) => e.filter((x) => x.id !== etapaId));
+  const moveEtapa = (setorId, idx, dir) =>
+    updEtapas(setorId, (e) => {
+      const arr = [...e]; const j = idx + dir;
+      if (j < 0 || j >= arr.length) return arr;
+      [arr[idx], arr[j]] = [arr[j], arr[idx]]; return arr;
+    });
+  const moveEtapaTo = (setorId, from, to) =>
+    updEtapas(setorId, (e) => {
+      const a = [...e]; const [m] = a.splice(from, 1);
+      a.splice(Math.max(0, Math.min(a.length, to)), 0, m); return a;
+    });
+
+  /* export / import */
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "mapa-processos-hbb.json";
+    a.click();
+  };
+  const importJSON = (ev) => {
+    const f = ev.target.files?.[0]; if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      try {
+        const parsed = JSON.parse(rd.result);
+        if (parsed.setores) { const n = normalize(parsed); commit(n); setActiveSetor(n.setores[0]?.id || null); }
+      } catch { alert("Arquivo inválido."); }
+    };
+    rd.readAsText(f);
+    ev.target.value = "";
+  };
+
+  /* aggregates */
+  const allGargalos = setores.flatMap((s) =>
+    s.etapas.filter((e) => e.gargalo).map((e) => ({ setor: s.nome, cor: s.cor, etapa: e.nome, ...e.gargalo })));
+  const allIdeias = setores.flatMap((s) =>
+    s.etapas.flatMap((e) => e.ideias.map((i) => ({ setor: s.nome, cor: s.cor, etapa: e.nome, setorId: s.id, etapaId: e.id, ...i }))));
+  const allEtapas = setores.flatMap((s) =>
+    s.etapas.map((e) => ({ id: e.id, setorId: s.id, etapaId: e.id, setor: s.nome, cor: s.cor, nome: e.nome, status: e.status || "ideia", horasMes: e.horasMes || 0 })));
+  const totalEtapas = setores.reduce((a, s) => a + s.etapas.length, 0);
+  const custoHora = data.custoHora ?? 50;
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+
+      <header className="topbar">
+        <div className="brand">
+          <div className="logo"><Workflow size={20} /></div>
+          <div>
+            <h1>Mapa de Processos &amp; Automação</h1>
+            <span className="sub">Diagnóstico de fluxos, gargalos e oportunidades — HBB</span>
+          </div>
+          <span className={"modebadge " + (typeof window !== "undefined" && window.__remote ? "shared" : "local")}>
+            {typeof window !== "undefined" && window.__remote ? "● Compartilhado" : "● Local"}
+          </span>
+        </div>
+        <div className="tools">
+          <button className="ghost" onClick={exportJSON} title="Exportar JSON"><Download size={15}/> Exportar</button>
+          <button className="ghost" onClick={() => fileRef.current?.click()} title="Importar JSON"><Upload size={15}/> Importar</button>
+          <button className="ghost" onClick={() => window.print()} title="Imprimir / PDF"><Printer size={15}/></button>
+          <input ref={fileRef} type="file" accept="application/json" onChange={importJSON} style={{ display: "none" }} />
+        </div>
+      </header>
+
+      <nav className="viewnav">
+        {[
+          ["processos", <Layers size={15}/>, "Processos"],
+          ["gargalos", <AlertTriangle size={15}/>, `Gargalos (${allGargalos.length})`],
+          ["automacao", <Zap size={15}/>, `Automação (${allIdeias.length})`],
+          ["roadmap", <GitBranch size={15}/>, "Roadmap"],
+          ["painel", <Gauge size={15}/>, "Painel"],
+        ].map(([k, ic, lb]) => (
+          <button key={k} className={"vtab" + (view === k ? " on" : "")} onClick={() => setView(k)}>
+            {ic} {lb}
+          </button>
+        ))}
+      </nav>
+
+      <main className="body">
+        {view === "processos" && (
+          <div className="proc">
+            <aside className="rail">
+              <div className="railhead"><span>Setores</span>
+                <button className="iconbtn" onClick={addSetor} title="Novo setor"><Plus size={16}/></button>
+              </div>
+              {setores.map((s) => (
+                <button key={s.id}
+                  className={"setoritem" + (s.id === activeSetor ? " on" : "")}
+                  onClick={() => { setActiveSetor(s.id); setPendingDel(null); }}>
+                  <span className="dot" style={{ background: s.cor }} />
+                  <span className="nm">{s.nome}</span>
+                  <span className="ct">{s.etapas.length}</span>
+                </button>
+              ))}
+            </aside>
+
+            <section className="canvas">
+              {setor ? (
+                <>
+                  <div className="canvashead">
+                    <EditableTitle value={setor.nome} cor={setor.cor}
+                      onSave={(v) => renameSetor(setor.id, v)} />
+                    <div className="canvastabs">
+                      <button className={"ctab" + (canvasTab === "etapas" ? " on" : "")} onClick={() => setCanvasTab("etapas")}><List size={14}/> Etapas</button>
+                      <button className={"ctab" + (canvasTab === "fluxo" ? " on" : "")} onClick={() => setCanvasTab("fluxo")}><Share2 size={14}/> Fluxograma</button>
+                    </div>
+                    {pendingDel === setor.id ? (
+                      <div className="delconfirm">
+                        <span>Excluir setor?</span>
+                        <button className="dcyes" onClick={() => delSetor(setor.id)}><Check size={14}/> Sim</button>
+                        <button className="dcno" onClick={() => setPendingDel(null)}><X size={14}/></button>
+                      </div>
+                    ) : (
+                      <button className="del" onClick={() => setPendingDel(setor.id)} title="Excluir setor"><Trash2 size={15}/></button>
+                    )}
+                  </div>
+
+                  {canvasTab === "etapas" ? (
+                    <div className="filterbar">
+                      <input className="fsearch" placeholder="Buscar etapa, responsável ou ferramenta…" value={filtro.q}
+                        onChange={(e) => setFiltro({ ...filtro, q: e.target.value })} />
+                      <select value={filtro.sev} onChange={(e) => setFiltro({ ...filtro, sev: e.target.value })}>
+                        <option value="">Gargalo: todos</option>
+                        {SEV_ORDER.map((k) => <option key={k} value={k}>{SEV[k].label}</option>)}
+                      </select>
+                      <select value={filtro.mat} onChange={(e) => setFiltro({ ...filtro, mat: e.target.value })}>
+                        <option value="">Maturidade: todas</option>
+                        {MATUR_ORDER.map((k) => <option key={k} value={k}>{MATUR[k].label}</option>)}
+                      </select>
+                      <select value={filtro.st} onChange={(e) => setFiltro({ ...filtro, st: e.target.value })}>
+                        <option value="">Status: todos</option>
+                        {STATUS_ORDER.map((k) => <option key={k} value={k}>{STATUS[k].label}</option>)}
+                      </select>
+                      {(filtro.q || filtro.sev || filtro.mat || filtro.st) &&
+                        <button className="fclear" onClick={() => setFiltro({ q: "", sev: "", mat: "", st: "" })}><X size={13}/> Limpar</button>}
+                    </div>
+                  ) : (
+                    <div className="filterbar">
+                      <span className="colorlb">Colorir blocos por:</span>
+                      <button className={"colorbtn" + (flowColor === "sev" ? " on" : "")} onClick={() => setFlowColor("sev")}>Severidade do gargalo</button>
+                      <button className={"colorbtn" + (flowColor === "mat" ? " on" : "")} onClick={() => setFlowColor("mat")}>Maturidade</button>
+                      <button className={"colorbtn" + (flowColor === "status" ? " on" : "")} onClick={() => setFlowColor("status")}>Status do projeto</button>
+                    </div>
+                  )}
+
+                  {canvasTab === "fluxo" ? (
+                    <>
+                      <StatusPipeline setor={setor}
+                        onSelect={(id) => { setCanvasTab("etapas"); setExpanded(id);
+                          setTimeout(() => document.getElementById("et-" + id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60); }} />
+                      <Flowchart setor={setor} colorMode={flowColor}
+                        onSelect={(id) => { setCanvasTab("etapas"); setExpanded(id);
+                          setTimeout(() => document.getElementById("et-" + id)?.scrollIntoView({ behavior: "smooth", block: "center" }), 60); }} />
+                    </>
+                  ) : (
+                  <div className="flow">
+                    {(() => {
+                      const filtering = !!(filtro.q || filtro.sev || filtro.mat || filtro.st);
+                      const ql = filtro.q.toLowerCase();
+                      const match = (e) => {
+                        if (filtro.sev && e.gargalo?.severidade !== filtro.sev) return false;
+                        if (filtro.mat && (e.maturidade || "manual") !== filtro.mat) return false;
+                        if (filtro.st && (e.status || "ideia") !== filtro.st) return false;
+                        if (ql) { const hay = (e.nome + " " + (e.responsavel || "") + " " + (e.ferramentas || []).join(" ")).toLowerCase(); if (!hay.includes(ql)) return false; }
+                        return true;
+                      };
+                      const vis = setor.etapas.map((e, i) => ({ e, i })).filter(({ e }) => match(e));
+                      if (!vis.length) return <p className="empty">Nenhuma etapa corresponde ao filtro.</p>;
+                      return vis.map(({ e, i }, k) => (
+                        <React.Fragment key={e.id}>
+                          <EtapaCard
+                            etapa={e} index={i} total={setor.etapas.length} cor={setor.cor}
+                            expanded={expanded === e.id}
+                            onToggle={() => setExpanded(expanded === e.id ? null : e.id)}
+                            onChange={(patch) => updEtapa(setor.id, e.id, patch)}
+                            onDelete={() => delEtapa(setor.id, e.id)}
+                            onMove={(d) => moveEtapa(setor.id, i, d)}
+                            onTop={() => moveEtapaTo(setor.id, i, 0)}
+                            draggable={!filtering}
+                            isOver={overIdx === i && dragIdx !== null && dragIdx !== i}
+                            onDragStart={() => setDragIdx(i)}
+                            onDragOver={() => { if (overIdx !== i) setOverIdx(i); }}
+                            onDrop={() => { if (dragIdx !== null && dragIdx !== i) moveEtapaTo(setor.id, dragIdx, i); setDragIdx(null); setOverIdx(null); }}
+                            onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                          />
+                          {!filtering && k < vis.length - 1 && (
+                            <div className="connector"><span className="line" /><ArrowDown size={16} /></div>
+                          )}
+                        </React.Fragment>
+                      ));
+                    })()}
+                    <button className="addetapa" onClick={() => addEtapa(setor.id)}>
+                      <Plus size={16}/> Adicionar etapa
+                    </button>
+                  </div>
+                  )}
+                </>
+              ) : <p className="empty">Crie um setor para começar.</p>}
+            </section>
+          </div>
+        )}
+
+        {view === "gargalos" && <GargalosView gargalos={allGargalos} />}
+        {view === "automacao" && <AutomacaoView ideias={allIdeias} custoHora={custoHora} />}
+        {view === "roadmap" && (
+          <RoadmapView ideias={allIdeias} etapas={allEtapas} custoHora={custoHora}
+            onUpdate={(setorId, etapaId, ideiaId, patch) => updIdeia(setorId, etapaId, ideiaId, patch)}
+            onUpdateEtapa={(setorId, etapaId, patch) => updEtapa(setorId, etapaId, patch)} />
+        )}
+        {view === "painel" && (
+          <PainelView setores={setores} totalEtapas={totalEtapas}
+            gargalos={allGargalos} ideias={allIdeias} custoHora={custoHora} setCusto={setCusto} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+/* ============================ editable title ============================ */
+function EditableTitle({ value, cor, onSave }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+  return (
+    <div className="ettitle">
+      <span className="bigdot" style={{ background: cor }} />
+      {edit ? (
+        <input className="titleinput" value={v} autoFocus
+          onChange={(e) => setV(e.target.value)}
+          onBlur={() => { onSave(v.trim() || "Setor"); setEdit(false); }}
+          onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+      ) : (
+        <h2 onClick={() => setEdit(true)}>{value} <Pencil size={13} className="pen" /></h2>
+      )}
+    </div>
+  );
+}
+
+/* ============================ etapa card ============================ */
+function EtapaCard({ etapa, index, total, cor, expanded, onToggle, onChange, onDelete, onMove, onTop, draggable, isOver, onDragStart, onDragOver, onDrop, onDragEnd }) {
+  const g = etapa.gargalo;
+  const st = etapa.status || "ideia";
+  const [ideia, setIdeia] = useState({ titulo: "", descricao: "", impacto: 3, esforco: 3, horasEconomia: 0 });
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  const addIdeia = () => {
+    if (!ideia.titulo.trim()) return;
+    onChange({ ideias: [...etapa.ideias, { id: uid(), status: "ideia", responsavelIdeia: "", prazo: "", ...ideia }] });
+    setIdeia({ titulo: "", descricao: "", impacto: 3, esforco: 3, horasEconomia: 0 });
+  };
+  const delIdeia = (id) => onChange({ ideias: etapa.ideias.filter((x) => x.id !== id) });
+  const cycleStatus = () => { const i = STATUS_ORDER.indexOf(st); onChange({ status: STATUS_ORDER[(i + 1) % STATUS_ORDER.length] }); };
+
+  return (
+    <div id={"et-" + etapa.id} className={"card" + (expanded ? " open" : "") + (isOver ? " over" : "")}
+      style={{ "--cor": cor }}
+      onDragOver={draggable ? (ev) => { ev.preventDefault(); onDragOver && onDragOver(); } : undefined}
+      onDrop={draggable ? (ev) => { ev.preventDefault(); onDrop && onDrop(); } : undefined}>
+      <div className="cardhead" onClick={onToggle}>
+        {draggable && (
+          <span className="grip" title="Arraste para reordenar" draggable
+            onClick={(ev) => ev.stopPropagation()}
+            onDragStart={(ev) => { ev.stopPropagation(); onDragStart && onDragStart(); }}
+            onDragEnd={(ev) => { onDragEnd && onDragEnd(); }}>
+            <GripVertical size={15}/>
+          </span>
+        )}
+        <span className="num" style={{ background: cor, borderRadius: etapa.tipo === "decisao" ? "50%" : 7 }}>{index + 1}</span>
+        <div className="cardtitle">
+          <strong>{etapa.nome}</strong>
+          {etapa.responsavel && <span className="resp">{etapa.responsavel}</span>}
+        </div>
+        <div className="badges">
+          <button className="statuspill etst" style={{ background: STATUS[st].cor }}
+            title="Status do projeto (clique para avançar)"
+            onClick={(ev) => { ev.stopPropagation(); cycleStatus(); }}>{STATUS[st].label}</button>
+          <span className="mtag2" style={{ borderColor: MATUR[etapa.maturidade || "manual"].cor, color: MATUR[etapa.maturidade || "manual"].cor }}>{MATUR[etapa.maturidade || "manual"].label}</span>
+          {etapa.horasMes > 0 && <span className="htag">{etapa.horasMes}h/mês</span>}
+          {etapa.tipo === "decisao" && <span className="badge dec"><GitBranch size={11}/> Decisão</span>}
+          {g && <span className="badge" style={{ background: SEV[g.severidade].cor }}>
+            <AlertTriangle size={11}/> {SEV[g.severidade].label}</span>}
+          {etapa.ideias.length > 0 && <span className="badge ideia">
+            <Lightbulb size={11}/> {etapa.ideias.length}</span>}
+          {index > 0 && onTop && (
+            <button className="topbtn" title="Mover para o topo" onClick={(ev) => { ev.stopPropagation(); onTop(); }}><ArrowUpToLine size={14}/></button>
+          )}
+          {confirmDel ? (
+            <span className="etconfirm" onClick={(ev) => ev.stopPropagation()}>
+              <button className="dcyes sm" onClick={(ev) => { ev.stopPropagation(); onDelete(); }} title="Confirmar exclusão"><Check size={13}/></button>
+              <button className="dcno" onClick={(ev) => { ev.stopPropagation(); setConfirmDel(false); }} title="Cancelar"><X size={13}/></button>
+            </span>
+          ) : (
+            <button className="trashbtn" onClick={(ev) => { ev.stopPropagation(); setConfirmDel(true); }} title="Excluir etapa"><Trash2 size={14}/></button>
+          )}
+          {expanded ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="cardbody">
+          <div className="grid2">
+            <Field label="Nome da etapa">
+              <input value={etapa.nome} onChange={(e) => onChange({ nome: e.target.value })} />
+            </Field>
+            <Field label="Responsável">
+              <input value={etapa.responsavel} placeholder="Ex.: Analista Fiscal"
+                onChange={(e) => onChange({ responsavel: e.target.value })} />
+            </Field>
+          </div>
+          <Field label="Descrição">
+            <textarea rows={2} value={etapa.descricao}
+              onChange={(e) => onChange({ descricao: e.target.value })} />
+          </Field>
+          <div className="grid2">
+            <Field label="Ferramentas / sistemas (separe por vírgula)">
+              <input value={etapa.ferramentas.join(", ")}
+                onChange={(e) => onChange({ ferramentas: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) })} />
+            </Field>
+            <Field label="Frequência / tempo">
+              <input value={etapa.tempo} placeholder="Diária, Mensal, 2h..."
+                onChange={(e) => onChange({ tempo: e.target.value })} />
+            </Field>
+          </div>
+
+          {/* quantificação + maturidade */}
+          <div className="block">
+            <div className="blocktitle"><Gauge size={14}/> Carga e maturidade</div>
+            <div className="grid2">
+              <Field label="Horas/mês gastas nesta etapa">
+                <input type="number" min={0} step={0.5} value={etapa.horasMes || 0}
+                  onChange={(e) => onChange({ horasMes: +e.target.value || 0 })} />
+              </Field>
+              <div className="field"><span>Nível de automação atual</span>
+                <div className="matpick">
+                  {MATUR_ORDER.map((k) => (
+                    <button key={k} className={"matbtn" + ((etapa.maturidade || "manual") === k ? " on" : "")}
+                      style={{ "--c": MATUR[k].cor }} onClick={() => onChange({ maturidade: k })}>{MATUR[k].label}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="field" style={{ marginTop: 11 }}><span>Status do projeto</span>
+              <div className="statpick">
+                {STATUS_ORDER.map((k) => (
+                  <button key={k} className={"statbtn" + ((etapa.status || "ideia") === k ? " on" : "")}
+                    style={{ "--c": STATUS[k].cor }} onClick={() => onChange({ status: k })}>{STATUS[k].label}</button>
+                ))}
+              </div>
+            </div>
+            {etapa.historico && etapa.historico.length > 0 && (
+              <div className="histbox">
+                <div className="histtitle">Histórico — por onde passou</div>
+                <ol className="histlist">
+                  {etapa.historico.map((h, idx) => (
+                    <li key={idx}>
+                      <span className="histdot" style={{ background: STATUS[h.status]?.cor || "#999" }} />
+                      <span className="histlabel">{STATUS[h.status]?.label || h.status}</span>
+                      <span className="histdate">{fmtData(h.data)}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+          </div>
+
+          {/* tipo / decisão */}
+          <div className="block">
+            <div className="blocktitle"><GitBranch size={14}/> Tipo de etapa</div>
+            <div className="tipopick">
+              <button className={"tipobtn" + ((etapa.tipo || "processo") === "processo" ? " on" : "")}
+                onClick={() => onChange({ tipo: "processo" })}>Processo</button>
+              <button className={"tipobtn" + (etapa.tipo === "decisao" ? " on" : "")}
+                onClick={() => onChange({ tipo: "decisao", desvio: etapa.desvio || { label: "Não", acao: "", retorno: "" }, principalLabel: etapa.principalLabel || "Sim" })}>Decisão</button>
+            </div>
+            {etapa.tipo === "decisao" && (
+              <div className="decinner">
+                <Field label="Caminho principal (segue o fluxo)">
+                  <input value={etapa.principalLabel || ""} placeholder="Ex.: Sim / Conforme / Aprovado"
+                    onChange={(e) => onChange({ principalLabel: e.target.value })} />
+                </Field>
+                <div className="decsep">Desvio (caminho alternativo)</div>
+                <div className="grid2">
+                  <Field label="Rótulo do desvio">
+                    <input value={etapa.desvio?.label || ""} placeholder="Ex.: Não / Divergente"
+                      onChange={(e) => onChange({ desvio: { ...(etapa.desvio || {}), label: e.target.value } })} />
+                  </Field>
+                  <Field label="Ação do desvio">
+                    <input value={etapa.desvio?.acao || ""} placeholder="Ex.: Corrigir arquivo"
+                      onChange={(e) => onChange({ desvio: { ...(etapa.desvio || {}), acao: e.target.value } })} />
+                  </Field>
+                </div>
+                <Field label="Retorno (↻) — para onde volta">
+                  <input value={etapa.desvio?.retorno || ""} placeholder="Ex.: revalida no PVA"
+                    onChange={(e) => onChange({ desvio: { ...(etapa.desvio || {}), retorno: e.target.value } })} />
+                </Field>
+                <p className="dechint">No fluxograma, esta etapa vira um losango. O caminho principal segue para a próxima etapa; o desvio aparece numa caixa ao lado com a marca de retorno.</p>
+              </div>
+            )}
+          </div>
+
+          {/* gargalo */}
+          <div className="block">
+            <label className="check">
+              <input type="checkbox" checked={!!g}
+                onChange={(e) => onChange({ gargalo: e.target.checked ? { severidade: "medio", descricao: "" } : null })} />
+              <AlertTriangle size={14}/> Marcar como gargalo
+            </label>
+            {g && (
+              <div className="garginner">
+                <div className="sevpick">
+                  {SEV_ORDER.slice().reverse().map((k) => (
+                    <button key={k}
+                      className={"sevbtn" + (g.severidade === k ? " on" : "")}
+                      style={{ "--c": SEV[k].cor }}
+                      onClick={() => onChange({ gargalo: { ...g, severidade: k } })}>
+                      {SEV[k].label}
+                    </button>
+                  ))}
+                </div>
+                <textarea rows={2} placeholder="Por que é um gargalo? (volume, retrabalho, risco, espera...)"
+                  value={g.descricao} onChange={(e) => onChange({ gargalo: { ...g, descricao: e.target.value } })} />
+              </div>
+            )}
+          </div>
+
+          {/* ideias */}
+          <div className="block">
+            <div className="blocktitle"><Lightbulb size={14}/> Ideias de automação / melhoria</div>
+            {etapa.ideias.map((i) => (
+              <div className="ideiarow" key={i.id}>
+                <div className="ideiainfo">
+                  <strong>{i.titulo}</strong>
+                  {i.descricao && <span>{i.descricao}</span>}
+                </div>
+                <div className="ideiameta">
+                  <button className="statuspill" style={{ background: STATUS[i.status || "ideia"].cor }}
+                    title="Clique para avançar o status"
+                    onClick={() => { const idx = STATUS_ORDER.indexOf(i.status || "ideia"); const next = STATUS_ORDER[(idx + 1) % STATUS_ORDER.length]; onChange({ ideias: etapa.ideias.map((x) => x.id === i.id ? { ...x, status: next } : x) }); }}>
+                    {STATUS[i.status || "ideia"].label}
+                  </button>
+                  <span className="mtag" title="Impacto">I {i.impacto}</span>
+                  <span className="mtag" title="Esforço">E {i.esforco}</span>
+                  {i.horasEconomia > 0 && <span className="mtag eco" title="Horas economizadas/mês">{i.horasEconomia}h</span>}
+                  <button className="iconbtn sm" onClick={() => delIdeia(i.id)}><X size={13}/></button>
+                </div>
+              </div>
+            ))}
+            <div className="ideiaform">
+              <input placeholder="Título da ideia" value={ideia.titulo}
+                onChange={(e) => setIdeia({ ...ideia, titulo: e.target.value })} />
+              <input placeholder="Descrição (opcional)" value={ideia.descricao}
+                onChange={(e) => setIdeia({ ...ideia, descricao: e.target.value })} />
+              <div className="sliders">
+                <Slider label="Impacto" value={ideia.impacto} onChange={(v) => setIdeia({ ...ideia, impacto: v })} />
+                <Slider label="Esforço" value={ideia.esforco} onChange={(v) => setIdeia({ ...ideia, esforco: v })} />
+                <label className="slider numfield"><span>Horas/mês economizadas</span>
+                  <input type="number" min={0} step={0.5} value={ideia.horasEconomia}
+                    onChange={(e) => setIdeia({ ...ideia, horasEconomia: +e.target.value || 0 })} />
+                </label>
+                <button className="add sm" onClick={addIdeia}><Plus size={14}/> Add</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="cardactions">
+            <div className="moves">
+              <button className="iconbtn sm" disabled={index === 0} onClick={() => onMove(-1)}><ChevronUp size={15}/></button>
+              <button className="iconbtn sm" disabled={index === total - 1} onClick={() => onMove(1)}><ChevronDown size={15}/></button>
+            </div>
+            <button className="del sm" onClick={onDelete}><Trash2 size={14}/> Excluir etapa</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return <label className="field"><span>{label}</span>{children}</label>;
+}
+function Slider({ label, value, onChange }) {
+  return (
+    <label className="slider">
+      <span>{label} <b>{value}</b></span>
+      <input type="range" min={1} max={5} value={value} onChange={(e) => onChange(+e.target.value)} />
+    </label>
+  );
+}
+
+/* ============================ esteira de status ============================ */
+function StatusPipeline({ setor, onSelect }) {
+  const etapas = setor.etapas || [];
+  const trunc = (s, n) => { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  const by = STATUS_ORDER.map((k) => ({ k, items: etapas.filter((e) => (e.status || "ideia") === k) }));
+  const total = etapas.length;
+  const done = etapas.filter((e) => (e.status || "ideia") === "concluido").length;
+  return (
+    <div className="pipeline">
+      <div className="pipehead">
+        <span className="pipetitle">Progresso por status — da ideia ao concluído</span>
+        <span className="pipeprog">{done} de {total} concluídas</span>
+      </div>
+      <div className="piperow">
+        {by.map(({ k, items }, idx) => (
+          <React.Fragment key={k}>
+            <div className="pipestage" style={{ borderTopColor: STATUS[k].cor }}>
+              <div className="pipestagehd">
+                <span style={{ color: STATUS[k].cor }}>{STATUS[k].label}</span>
+                <span className="pipect">{items.length}</span>
+              </div>
+              <div className="pipechips">
+                {items.map((e) => (
+                  <button key={e.id} className="pipechip" style={{ background: STATUS[k].cor }}
+                    title={e.nome} onClick={() => onSelect(e.id)}>{trunc(e.nome, 24)}</button>
+                ))}
+                {items.length === 0 && <span className="pipeempty">—</span>}
+              </div>
+            </div>
+            {idx < STATUS_ORDER.length - 1 && <span className="pipearrow">→</span>}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ flowchart ============================ */
+function Flowchart({ setor, onSelect, colorMode = "sev" }) {
+  const etapas = setor.etapas || [];
+  const CX = 250, BOX_W = 240, GAP = 34, PAD = 26;
+  const ink = "#22201b", muted = "#7a7568", desvioCor = "#b06b2e";
+  const trunc = (s, n) => { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+  const colorOf = (e) =>
+    colorMode === "status" ? STATUS[e.status || "ideia"].cor
+    : colorMode === "mat" ? MATUR[e.maturidade || "manual"].cor
+    : (e.gargalo ? SEV[e.gargalo.severidade].cor : setor.cor);
+
+  if (!etapas.length)
+    return <p className="empty">Adicione etapas na aba “Etapas” para gerar o fluxograma automaticamente.</p>;
+
+  let y = PAD;
+  const nodes = etapas.map((e) => {
+    const isDec = e.tipo === "decisao";
+    const sub = (e.responsavel || "").trim();
+    const h = isDec ? 92 : (sub ? 58 : 48);
+    const n = { e, isDec, sub, top: y, h, centerY: y + h / 2, bottom: y + h,
+      hasDesvio: isDec && !!(e.desvio?.acao || "").trim() };
+    y += h + GAP;
+    return n;
+  });
+  const H = (nodes[nodes.length - 1].bottom) + 22;
+
+  return (
+    <div className="flowchart">
+      <svg width="100%" viewBox={`0 0 680 ${H}`} style={{ maxWidth: 680, display: "block", margin: "0 auto" }}>
+        <defs>
+          <marker id="fa" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </marker>
+        </defs>
+
+        {nodes.map((n, i) => {
+          const nx = nodes[i + 1]; if (!nx) return null;
+          return (
+            <g key={"c" + i}>
+              <line x1={CX} y1={n.bottom + 1} x2={CX} y2={nx.top - 6} stroke="#bdb6a4" strokeWidth="1.4" markerEnd="url(#fa)" />
+              {n.isDec && (n.e.principalLabel || "").trim() &&
+                <text x={CX + 9} y={(n.bottom + nx.top) / 2} fontSize="11" fontWeight="600" fill={muted}>{trunc(n.e.principalLabel, 12)}</text>}
+            </g>
+          );
+        })}
+
+        {nodes.filter((n) => n.hasDesvio).map((n) => {
+          const cy = n.centerY, d = n.e.desvio;
+          return (
+            <g key={"d" + n.e.id} className="fnode" onClick={() => onSelect(n.e.id)}>
+              <line x1={CX + 100} y1={cy} x2={414} y2={cy} stroke="#bdb6a4" strokeWidth="1.4" markerEnd="url(#fa)" />
+              <text x={385} y={cy - 9} textAnchor="middle" fontSize="11" fontWeight="600" fill={muted}>{trunc(d.label || "Não", 10)}</text>
+              <rect x={420} y={cy - 29} width={220} height={58} rx="9" fill={desvioCor} fillOpacity="0.1" stroke={desvioCor} strokeWidth="1.4" />
+              <text x={530} y={cy - 7} textAnchor="middle" dominantBaseline="central" fontSize="13" fontWeight="600" fill={ink}>{trunc(d.acao, 24)}</text>
+              <text x={530} y={cy + 12} textAnchor="middle" dominantBaseline="central" fontSize="11" fontWeight="600" fill={desvioCor}>↻ {trunc(d.retorno || "retorna", 22)}</text>
+            </g>
+          );
+        })}
+
+        {nodes.map((n) => {
+          const c = colorOf(n.e), x = CX - BOX_W / 2;
+          if (n.isDec) {
+            const cy = n.centerY;
+            const pts = `${CX},${n.top} ${CX + 100},${cy} ${CX},${n.bottom} ${CX - 100},${cy}`;
+            return (
+              <g key={n.e.id} className="fnode" onClick={() => onSelect(n.e.id)}>
+                <polygon points={pts} fill={c} fillOpacity="0.13" stroke={c} strokeWidth="1.4" />
+                <text x={CX} y={cy} textAnchor="middle" dominantBaseline="central" fontSize="13" fontWeight="600" fill={ink}>{trunc(n.e.nome, 18)}</text>
+              </g>
+            );
+          }
+          return (
+            <g key={n.e.id} className="fnode" onClick={() => onSelect(n.e.id)}>
+              <rect x={x} y={n.top} width={BOX_W} height={n.h} rx="9" fill={c} fillOpacity="0.13" stroke={c} strokeWidth="1.4" />
+              {n.sub ? (
+                <>
+                  <text x={CX} y={n.top + 22} textAnchor="middle" dominantBaseline="central" fontSize="13" fontWeight="600" fill={ink}>{trunc(n.e.nome, 28)}</text>
+                  <text x={CX} y={n.top + 40} textAnchor="middle" dominantBaseline="central" fontSize="11" fill={muted}>{trunc(n.sub, 32)}</text>
+                </>
+              ) : (
+                <text x={CX} y={n.centerY} textAnchor="middle" dominantBaseline="central" fontSize="13" fontWeight="600" fill={ink}>{trunc(n.e.nome, 28)}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+
+      <div className="flegend">
+        {colorMode === "status"
+          ? STATUS_ORDER.map((k) => <span key={k}><i style={{ background: STATUS[k].cor }} /> {STATUS[k].label}</span>)
+          : colorMode === "mat"
+          ? MATUR_ORDER.map((k) => <span key={k}><i style={{ background: MATUR[k].cor }} /> {MATUR[k].label}</span>)
+          : <>
+              <span><i style={{ background: setor.cor }} /> Etapa do setor</span>
+              <span><i style={{ background: SEV.critico.cor }} /> Gargalo (cor = severidade)</span>
+            </>}
+        <span><i className="diamond" style={{ borderColor: "#7a7568" }} /> Decisão</span>
+        <span><b style={{ color: desvioCor }}>↻</b> Desvio / retorno</span>
+      </div>
+      <p className="flowhint">Clique em qualquer bloco para editar a etapa. Marque uma etapa como <b>Decisão</b> na aba Etapas para criar ramificações.</p>
+    </div>
+  );
+}
+
+/* ============================ gargalos view ============================ */
+function GargalosView({ gargalos }) {
+  const grouped = SEV_ORDER.map((k) => ({ k, items: gargalos.filter((g) => g.severidade === k) }));
+  return (
+    <div className="page">
+      <h2 className="pgtitle"><AlertTriangle size={18}/> Gargalos identificados</h2>
+      {gargalos.length === 0 && <p className="empty">Nenhum gargalo marcado ainda. Vá em Processos e marque as etapas críticas.</p>}
+      {grouped.map(({ k, items }) => items.length > 0 && (
+        <div className="gargroup" key={k}>
+          <div className="gargrouphead">
+            <span className="sevpill" style={{ background: SEV[k].cor }}>{SEV[k].label}</span>
+            <span className="ct2">{items.length}</span>
+          </div>
+          {items.map((g, idx) => (
+            <div className="gargcard" key={idx} style={{ borderLeftColor: SEV[g.severidade].cor }}>
+              <div className="gargmeta">
+                <span className="chip" style={{ background: g.cor }}>{g.setor}</span>
+                <strong>{g.etapa}</strong>
+              </div>
+              {g.descricao && <p>{g.descricao}</p>}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================ automação / matriz ============================ */
+function AutomacaoView({ ideias, custoHora }) {
+  const pos = (v) => ((v - 1) / 4) * 86 + 7; // 7%..93%
+  const ranked = ideias.map((i, idx) => ({ ...i, n: idx + 1, rs: (i.horasEconomia || 0) * custoHora }));
+  const quick = ranked.filter((i) => i.impacto >= 4 && i.esforco <= 2);
+  const totalHoras = ranked.reduce((a, i) => a + (i.horasEconomia || 0), 0);
+  const listSorted = [...ranked].sort((a, b) => (b.horasEconomia || 0) - (a.horasEconomia || 0));
+
+  return (
+    <div className="page">
+      <h2 className="pgtitle"><Zap size={18}/> Matriz de priorização — Impacto × Esforço</h2>
+      {ideias.length === 0 && <p className="empty">Cadastre ideias de automação nas etapas para vê-las aqui.</p>}
+      {ideias.length > 0 && (
+        <>
+          <div className="roisummary">
+            <div><span className="roin">{totalHoras}h</span><span className="roil">economia potencial / mês</span></div>
+            <div><span className="roin">{brl(totalHoras * custoHora)}</span><span className="roil">por mês (a {brl(custoHora)}/h)</span></div>
+            <div><span className="roin">{brl(totalHoras * custoHora * 12)}</span><span className="roil">por ano</span></div>
+          </div>
+
+          <div className="matrixwrap">
+            <span className="axis y">Impacto →</span>
+            <div className="matrix">
+              <div className="quad tl"><span>★ Ganhos rápidos</span></div>
+              <div className="quad tr"><span>Projetos estratégicos</span></div>
+              <div className="quad bl"><span>Preenchimento</span></div>
+              <div className="quad br"><span>Repensar / evitar</span></div>
+              {ranked.map((i) => (
+                <div className="pt" key={i.id}
+                  style={{ left: pos(i.esforco) + "%", bottom: pos(i.impacto) + "%", background: i.cor }}
+                  title={`${i.titulo} — ${i.setor} (I${i.impacto}/E${i.esforco}, ${i.horasEconomia || 0}h)`}>
+                  <span className="ptn">{i.n}</span>
+                </div>
+              ))}
+            </div>
+            <span className="axis x">Esforço →</span>
+          </div>
+
+          {quick.length > 0 && (
+            <div className="quickbox">
+              <strong>★ Comece por aqui (alto impacto, baixo esforço):</strong>
+              <ul>{quick.map((i) => <li key={i.id}>{i.titulo} <em>· {i.setor}{i.horasEconomia ? ` · ${i.horasEconomia}h/mês` : ""}</em></li>)}</ul>
+            </div>
+          )}
+
+          <div className="listhead">Priorizado por economia mensal</div>
+          <div className="ideialist">
+            {listSorted.map((i) => (
+              <div className="ideialistrow" key={i.id}>
+                <span className="ptn sm" style={{ background: i.cor }}>{i.n}</span>
+                <div className="ill">
+                  <strong>{i.titulo}</strong>
+                  <span className="illsub"><span className="chip sm" style={{ background: i.cor }}>{i.setor}</span> · {i.etapa} · <span style={{ color: STATUS[i.status || "ideia"].cor, fontWeight: 700 }}>{STATUS[i.status || "ideia"].label}</span></span>
+                  {i.descricao && <p>{i.descricao}</p>}
+                </div>
+                <div className="illmeta">
+                  {i.horasEconomia > 0 && <span className="mtag eco">{i.horasEconomia}h/mês</span>}
+                  {i.horasEconomia > 0 && <span className="mtag rs">{brl(i.rs)}/mês</span>}
+                  <span className="mtag">I{i.impacto} · E{i.esforco}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ============================ roadmap (kanban) ============================ */
+function RoadmapView({ ideias, etapas, custoHora, onUpdate, onUpdateEtapa }) {
+  const [modo, setModo] = useState("etapas");
+  const [drag, setDrag] = useState(null);
+  const items = modo === "ideias" ? ideias : etapas;
+  const setStatus = (it, novo) => {
+    if (modo === "ideias") onUpdate(it.setorId, it.etapaId, it.id, { status: novo });
+    else onUpdateEtapa(it.setorId, it.etapaId, { status: novo });
+  };
+  const move = (it, dir) => {
+    const idx = STATUS_ORDER.indexOf(it.status || "ideia");
+    setStatus(it, STATUS_ORDER[Math.min(STATUS_ORDER.length - 1, Math.max(0, idx + dir))]);
+  };
+  const cols = STATUS_ORDER.map((k) => ({ k, items: items.filter((i) => (i.status || "ideia") === k) }));
+
+  return (
+    <div className="page wide">
+      <h2 className="pgtitle"><GitBranch size={18}/> Roadmap / Projetos</h2>
+      <div className="filterbar">
+        <span className="colorlb">Quadro de:</span>
+        <button className={"colorbtn" + (modo === "etapas" ? " on" : "")} onClick={() => setModo("etapas")}>Etapas (projetos)</button>
+        <button className={"colorbtn" + (modo === "ideias" ? " on" : "")} onClick={() => setModo("ideias")}>Ideias de automação</button>
+        <span className="rmhint">Arraste os cartões entre as colunas para mudar o status.</span>
+      </div>
+      {items.length === 0 ? <p className="empty">Nada para exibir neste quadro ainda.</p> : (
+        <div className="kanban k5">
+          {cols.map(({ k, items: its }) => (
+            <div className={"kcol" + (drag ? " drop" : "")} key={k}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => { if (drag) setStatus(drag, k); setDrag(null); }}>
+              <div className="kcolhead" style={{ borderTopColor: STATUS[k].cor }}>
+                <span style={{ color: STATUS[k].cor }}>{STATUS[k].label}</span><span className="ct2">{its.length}</span>
+              </div>
+              {its.map((it) => (
+                <div className="kcard" key={it.id} style={{ borderLeftColor: it.cor }} draggable
+                  onDragStart={() => setDrag(it)} onDragEnd={() => setDrag(null)}>
+                  <strong>{modo === "ideias" ? it.titulo : it.nome}</strong>
+                  <span className="kchip" style={{ background: it.cor }}>{it.setor}</span>
+                  <div className="kmeta">
+                    {modo === "ideias" && it.horasEconomia > 0 && <span>{it.horasEconomia}h/mês · {brl(it.horasEconomia * custoHora)}</span>}
+                    {modo === "etapas" && it.horasMes > 0 && <span>{it.horasMes}h/mês</span>}
+                  </div>
+                  {modo === "ideias" && (
+                    <div className="kfields">
+                      <input placeholder="Responsável" value={it.responsavelIdeia || ""}
+                        onChange={(e) => onUpdate(it.setorId, it.etapaId, it.id, { responsavelIdeia: e.target.value })} />
+                      <input placeholder="Prazo" value={it.prazo || ""}
+                        onChange={(e) => onUpdate(it.setorId, it.etapaId, it.id, { prazo: e.target.value })} />
+                    </div>
+                  )}
+                  <div className="kmove">
+                    <button disabled={k === STATUS_ORDER[0]} onClick={() => move(it, -1)}>←</button>
+                    <button disabled={k === STATUS_ORDER[STATUS_ORDER.length - 1]} onClick={() => move(it, 1)}>→</button>
+                  </div>
+                </div>
+              ))}
+              {its.length === 0 && <p className="kempty">—</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================ painel ============================ */
+function PainelView({ setores, totalEtapas, gargalos, ideias, custoHora, setCusto }) {
+  const porSev = SEV_ORDER.map((k) => ({ k, n: gargalos.filter((g) => g.severidade === k).length }));
+  const quick = ideias.filter((i) => i.impacto >= 4 && i.esforco <= 2).length;
+  const maxEt = Math.max(1, ...setores.map((s) => s.etapas.length));
+  const horasTotal = setores.reduce((a, s) => a + s.etapas.reduce((b, e) => b + (e.horasMes || 0), 0), 0);
+  const horasGargalo = setores.reduce((a, s) => a + s.etapas.filter((e) => e.gargalo).reduce((b, e) => b + (e.horasMes || 0), 0), 0);
+  const horasEcon = ideias.reduce((a, i) => a + (i.horasEconomia || 0), 0);
+
+  // heatmap setor x maturidade
+  const heat = setores.map((s) => ({
+    s, counts: MATUR_ORDER.map((m) => s.etapas.filter((e) => (e.maturidade || "manual") === m).length),
+  }));
+
+  // inventário de sistemas
+  const inv = {};
+  setores.forEach((s) => s.etapas.forEach((e) => (e.ferramentas || []).forEach((f) => { inv[f] = (inv[f] || 0) + 1; })));
+  const invList = Object.entries(inv).sort((a, b) => b[1] - a[1]);
+  const maxInv = Math.max(1, ...invList.map(([, n]) => n));
+
+  return (
+    <div className="page">
+      <h2 className="pgtitle"><Gauge size={18}/> Visão geral</h2>
+      <div className="kpis">
+        <Kpi n={totalEtapas} l="Etapas mapeadas" />
+        <Kpi n={gargalos.length} l="Gargalos" accent="#e07a3f" />
+        <Kpi n={horasTotal + "h"} l="Horas/mês mapeadas" />
+        <Kpi n={horasGargalo + "h"} l="Horas/mês em gargalos" accent="#c0392b" />
+        <Kpi n={horasEcon + "h"} l="Recuperáveis/mês ★" accent="#3f9e6b" />
+        <Kpi n={brl(horasEcon * custoHora)} l="Economia/mês potencial" accent="#14564a" />
+      </div>
+
+      <div className="custobox">
+        <span>Custo por hora (para cálculo de R$):</span>
+        <input type="number" min={0} step={5} value={custoHora} onChange={(e) => setCusto(+e.target.value)} />
+        <span className="custohint">{brl(horasEcon * custoHora * 12)} / ano de economia potencial</span>
+      </div>
+
+      <div className="panelbox">
+        <h3>Maturidade de automação por setor</h3>
+        <div className="heat">
+          <div className="heatrow heathead">
+            <span className="heatlb"></span>
+            {MATUR_ORDER.map((m) => <span key={m} className="heatcol" style={{ color: MATUR[m].cor }}>{MATUR[m].label}</span>)}
+          </div>
+          {heat.map(({ s, counts }) => (
+            <div className="heatrow" key={s.id}>
+              <span className="heatlb">{s.nome}</span>
+              {counts.map((c, mi) => (
+                <span key={mi} className="heatcell"
+                  style={{ background: c ? MATUR[MATUR_ORDER[mi]].cor : "transparent", opacity: c ? 0.25 + Math.min(0.75, c * 0.25) : 1, color: c ? "#1a1a17" : "#bdb6a4" }}>{c || "·"}</span>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panelgrid">
+        <div className="panelbox">
+          <h3>Gargalos por severidade</h3>
+          {porSev.map(({ k, n }) => (
+            <div className="barrow" key={k}>
+              <span className="barlb">{SEV[k].label}</span>
+              <div className="bartrack"><div className="bar" style={{ width: (n / Math.max(1, gargalos.length)) * 100 + "%", background: SEV[k].cor }} /></div>
+              <span className="barval">{n}</span>
+            </div>
+          ))}
+        </div>
+        <div className="panelbox">
+          <h3>Inventário de sistemas</h3>
+          {invList.length === 0 && <p className="empty">Sem ferramentas cadastradas.</p>}
+          {invList.map(([f, n]) => (
+            <div className="barrow" key={f}>
+              <span className="barlb" title={f}>{f}</span>
+              <div className="bartrack"><div className="bar" style={{ width: (n / maxInv) * 100 + "%", background: "#5a7a8c" }} /></div>
+              <span className="barval">{n}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panelbox" style={{ marginTop: 18 }}>
+        <h3>Etapas por setor</h3>
+        {setores.map((s) => (
+          <div className="barrow" key={s.id}>
+            <span className="barlb">{s.nome}</span>
+            <div className="bartrack"><div className="bar" style={{ width: (s.etapas.length / maxEt) * 100 + "%", background: s.cor }} /></div>
+            <span className="barval">{s.etapas.length}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+function Kpi({ n, l, accent }) {
+  return <div className="kpi"><span className="kpin" style={accent ? { color: accent } : {}}>{n}</span><span className="kpil">{l}</span></div>;
+}
+
+/* ============================ styles ============================ */
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Public+Sans:wght@400;500;600;700&display=swap');
+* { box-sizing: border-box; }
+.app {
+  --paper:#f3efe6; --card:#fbf9f4; --ink:#22201b; --muted:#7a7568; --line:#e1dccf;
+  --accent:#14564a;
+  font-family:'Public Sans',system-ui,sans-serif; color:var(--ink);
+  background:
+    radial-gradient(circle at 12% -10%, #ffffff 0%, transparent 40%),
+    var(--paper);
+  min-height:100vh; padding-bottom:40px;
+}
+.app h1,.app h2,.app h3 { font-family:'Fraunces',Georgia,serif; font-weight:600; margin:0; }
+
+/* topbar */
+.topbar { display:flex; align-items:center; justify-content:space-between; gap:16px;
+  padding:18px 26px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+.brand { display:flex; align-items:center; gap:14px; }
+.logo { width:42px;height:42px;border-radius:11px;background:var(--accent);color:#fff;
+  display:grid;place-items:center; box-shadow:0 6px 16px -6px rgba(20,86,74,.6); }
+.brand h1 { font-size:21px; letter-spacing:-.3px; }
+.brand .sub { font-size:12.5px; color:var(--muted); }
+.modebadge { font-size:11px;font-weight:700;padding:3px 10px;border-radius:20px;white-space:nowrap;align-self:center; }
+.modebadge.shared { color:#2c7a55;background:#e7f3ec;border:1px solid #cfe5d8; }
+.modebadge.local { color:#8a8578;background:#0000000d; }
+.tools { display:flex; gap:8px; }
+.ghost { display:flex;align-items:center;gap:6px; background:var(--card); border:1px solid var(--line);
+  color:var(--ink); padding:8px 12px;border-radius:9px;font-size:13px;font-weight:500;cursor:pointer; }
+.ghost:hover { border-color:var(--accent); color:var(--accent); }
+
+/* viewnav */
+.viewnav { display:flex; gap:4px; padding:14px 26px 0; flex-wrap:wrap; }
+.vtab { display:flex;align-items:center;gap:7px; background:transparent;border:none;
+  padding:9px 16px;border-radius:9px 9px 0 0; font-size:13.5px;font-weight:600;
+  color:var(--muted);cursor:pointer; border-bottom:2px solid transparent; }
+.vtab:hover { color:var(--ink); }
+.vtab.on { color:var(--accent); border-bottom-color:var(--accent); background:var(--card); }
+
+/* body */
+.body { padding:22px 26px; }
+.proc { display:grid; grid-template-columns:230px 1fr; gap:24px; align-items:start; }
+@media (max-width:760px){ .proc{ grid-template-columns:1fr; } }
+
+/* rail */
+.rail { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:10px; position:sticky; top:14px; }
+.railhead { display:flex;justify-content:space-between;align-items:center; padding:4px 8px 10px;
+  font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--muted); }
+.setoritem { display:flex;align-items:center;gap:9px;width:100%; background:transparent;border:none;
+  padding:9px 10px;border-radius:9px;cursor:pointer;text-align:left;font-size:14px;color:var(--ink);font-family:inherit; }
+.setoritem:hover { background:#efeadd; }
+.setoritem.on { background:#e7f0ec; font-weight:600; }
+.setoritem .dot { width:10px;height:10px;border-radius:50%;flex:none; }
+.setoritem .nm { flex:1; overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.setoritem .ct { font-size:11px;color:var(--muted);background:#0000000d;padding:1px 7px;border-radius:20px; }
+.iconbtn { background:transparent;border:1px solid var(--line);border-radius:8px;width:30px;height:30px;
+  display:grid;place-items:center;cursor:pointer;color:var(--ink); }
+.iconbtn:hover { border-color:var(--accent);color:var(--accent); }
+.iconbtn.sm { width:26px;height:26px; }
+.iconbtn:disabled { opacity:.3; cursor:default; }
+
+/* canvas */
+.canvas { min-width:0; }
+.canvashead { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px;flex-wrap:wrap; }
+.canvastabs { display:flex;gap:4px;background:#efeadd;border-radius:9px;padding:3px; }
+.ctab { display:flex;align-items:center;gap:6px;background:transparent;border:none;padding:7px 13px;border-radius:7px;
+  font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit; }
+.ctab.on { background:var(--card);color:var(--accent);box-shadow:0 1px 4px rgba(0,0,0,.08); }
+.badge.dec { background:#5a7a8c; }
+.tipopick { display:flex;gap:8px; }
+.tipobtn { flex:1;background:#fff;border:1.5px solid var(--line);border-radius:9px;padding:9px;font-size:13.5px;
+  font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit; }
+.tipobtn.on { border-color:var(--accent);color:var(--accent);background:#e7f0ec; }
+.decinner { margin-top:12px;display:flex;flex-direction:column;gap:11px;border-top:1px solid var(--line);padding-top:12px; }
+.decsep { font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted); }
+.dechint { font-size:12px;color:var(--muted);margin:0;line-height:1.5; }
+.flowchart { background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 14px;overflow-x:auto; }
+.fnode { cursor:pointer;transition:opacity .15s; }
+.fnode:hover { opacity:.7; }
+.flegend { display:flex;flex-wrap:wrap;gap:16px;justify-content:center;margin-top:14px;
+  padding-top:14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted); }
+.flegend span { display:flex;align-items:center;gap:7px; }
+.flegend i { width:13px;height:13px;border-radius:3px;display:inline-block; }
+.flegend i.diamond { background:transparent;border:2px solid;transform:rotate(45deg);border-radius:2px;width:11px;height:11px; }
+.flegend b { font-size:15px;line-height:1; }
+.flowhint { text-align:center;font-size:12px;color:var(--muted);margin:12px 0 0;line-height:1.5; }
+.delconfirm { display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;color:#b54b3a;
+  background:#fbeae6;border:1px solid #e9c4ba;border-radius:9px;padding:5px 7px 5px 12px; }
+.dcyes { display:flex;align-items:center;gap:5px;background:#b54b3a;color:#fff;border:none;
+  padding:6px 11px;border-radius:7px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit; }
+.dcyes:hover { filter:brightness(1.08); }
+.dcno { display:grid;place-items:center;background:#fff;border:1px solid #e9c4ba;color:#b54b3a;
+  width:28px;height:28px;border-radius:7px;cursor:pointer; }
+.ettitle { display:flex;align-items:center;gap:11px; }
+.ettitle .bigdot { width:15px;height:15px;border-radius:4px; }
+.ettitle h2 { font-size:25px;cursor:pointer;display:flex;align-items:center;gap:8px;letter-spacing:-.4px; }
+.ettitle .pen { opacity:0;color:var(--muted); transition:.15s; }
+.ettitle h2:hover .pen { opacity:1; }
+.titleinput { font-family:'Fraunces',serif;font-size:24px;border:none;border-bottom:2px solid var(--accent);
+  background:transparent;outline:none;color:var(--ink); }
+.del { display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);
+  color:#b54b3a;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:13px;font-family:inherit; }
+.del:hover { border-color:#b54b3a;background:#fbeae6; }
+.del.sm { padding:6px 11px; }
+
+/* flow */
+.flow { display:flex;flex-direction:column;align-items:stretch; }
+.connector { display:flex;flex-direction:column;align-items:center;color:#bdb6a4;margin:-2px 0; }
+.connector .line { width:2px;height:14px;background:#cfc8b6; }
+.card { background:var(--card);border:1px solid var(--line);border-radius:13px;overflow:hidden;
+  border-left:4px solid var(--cor); transition:box-shadow .15s; }
+.card.open { box-shadow:0 12px 30px -16px rgba(0,0,0,.3); }
+.cardhead { display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer; }
+.cardhead:hover { background:#0000000a; }
+.num { width:26px;height:26px;border-radius:7px;color:#fff;font-size:13px;font-weight:700;
+  display:grid;place-items:center;flex:none; }
+.cardtitle { flex:1;min-width:0;display:flex;flex-direction:column;gap:1px; }
+.cardtitle strong { font-size:15px;font-weight:600; }
+.cardtitle .resp { font-size:12px;color:var(--muted); }
+.badges { display:flex;align-items:center;gap:6px;color:var(--muted); }
+.badge { display:flex;align-items:center;gap:4px;color:#fff;font-size:11px;font-weight:700;
+  padding:3px 8px;border-radius:20px; }
+.badge.ideia { background:#3a6f8b; }
+.trashbtn { display:grid;place-items:center;background:transparent;border:none;color:#bdb6a4;
+  width:28px;height:28px;border-radius:7px;cursor:pointer;transition:.12s; }
+.trashbtn:hover { color:#b54b3a;background:#fbeae6; }
+.etconfirm { display:flex;align-items:center;gap:4px; }
+.etconfirm .dcyes.sm { padding:5px 8px; }
+.etconfirm .dcno { width:26px;height:26px; }
+
+/* card body */
+.cardbody { padding:4px 16px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:13px;animation:fade .2s; }
+@keyframes fade { from{opacity:0;transform:translateY(-4px);} to{opacity:1;} }
+.grid2 { display:grid;grid-template-columns:1fr 1fr;gap:12px; }
+@media (max-width:620px){ .grid2{grid-template-columns:1fr;} }
+.field { display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;color:var(--muted); }
+.field input,.field textarea,.ideiaform input,.garginner textarea {
+  font-family:inherit;font-size:14px;color:var(--ink);font-weight:400;
+  background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none;resize:vertical; }
+.field input:focus,.field textarea:focus,.ideiaform input:focus,.garginner textarea:focus { border-color:var(--accent); }
+.block { background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 13px; }
+.blocktitle { display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:700;color:var(--ink);margin-bottom:9px; }
+.check { display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;cursor:pointer; }
+.check input { width:16px;height:16px;accent-color:#e07a3f; }
+.garginner { margin-top:11px;display:flex;flex-direction:column;gap:9px; }
+.garginner textarea { width:100%; }
+.sevpick { display:flex;gap:6px;flex-wrap:wrap; }
+.sevbtn { border:1.5px solid var(--c);color:var(--c);background:transparent;
+  padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit; }
+.sevbtn.on { background:var(--c);color:#fff; }
+
+/* ideias */
+.ideiarow { display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-top:1px dashed var(--line); }
+.ideiarow:first-of-type{border-top:none;}
+.ideiainfo { flex:1; }
+.ideiainfo strong { font-size:13.5px;display:block; }
+.ideiainfo span { font-size:12px;color:var(--muted); }
+.ideiameta { display:flex;align-items:center;gap:5px; }
+.mtag { font-size:11px;font-weight:700;color:var(--muted);background:#0000000d;padding:2px 8px;border-radius:6px;white-space:nowrap; }
+.ideiaform { margin-top:10px;display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:1px solid var(--line); }
+.sliders { display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap; }
+.slider { display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--muted);flex:1;min-width:120px; }
+.slider b { color:var(--accent); }
+.slider input[type=range]{ accent-color:var(--accent); }
+.add { display:flex;align-items:center;gap:6px;background:var(--accent);color:#fff;border:none;
+  padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit; }
+.add:hover{ filter:brightness(1.08); }
+.add.sm{ padding:7px 12px; }
+
+.cardactions { display:flex;justify-content:space-between;align-items:center; }
+.moves { display:flex;gap:5px; }
+.addetapa { display:flex;align-items:center;justify-content:center;gap:8px;margin-top:16px;
+  background:transparent;border:1.5px dashed #c3bca9;color:var(--muted);padding:13px;border-radius:11px;
+  font-size:14px;font-weight:600;cursor:pointer;font-family:inherit; }
+.addetapa:hover { border-color:var(--accent);color:var(--accent); }
+
+/* pages */
+.page { max-width:880px; }
+.pgtitle { display:flex;align-items:center;gap:9px;font-size:22px;margin-bottom:20px;letter-spacing:-.3px; }
+.empty { color:var(--muted);font-size:14px; }
+
+/* gargalos */
+.gargroup { margin-bottom:22px; }
+.gargrouphead { display:flex;align-items:center;gap:9px;margin-bottom:10px; }
+.sevpill { color:#fff;font-size:12px;font-weight:700;padding:4px 13px;border-radius:20px; }
+.ct2 { font-size:12px;color:var(--muted); }
+.gargcard { background:var(--card);border:1px solid var(--line);border-left:4px solid;border-radius:10px;
+  padding:13px 15px;margin-bottom:9px; }
+.gargmeta { display:flex;align-items:center;gap:9px;margin-bottom:5px; }
+.gargcard p { margin:0;font-size:13.5px;color:#4a463c;line-height:1.5; }
+.chip { color:#fff;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px; }
+.chip.sm { font-size:10px;padding:1px 7px; }
+
+/* matriz */
+.matrixwrap { position:relative; padding:0 0 24px 24px; margin-bottom:24px; }
+.matrix { position:relative;width:100%;aspect-ratio:1.5/1;background:var(--card);
+  border:1px solid var(--line);border-radius:12px;overflow:hidden; }
+.quad { position:absolute;width:50%;height:50%;display:flex;padding:11px;font-size:11.5px;font-weight:700;color:#9a9384;text-transform:uppercase;letter-spacing:.4px; }
+.quad.tl{ top:0;left:0;align-items:flex-start;background:#eaf3ee; }
+.quad.tr{ top:0;right:0;justify-content:flex-end;background:#fbf9f4; }
+.quad.bl{ bottom:0;left:0;align-items:flex-end;background:#fbf9f4; }
+.quad.br{ bottom:0;right:0;align-items:flex-end;justify-content:flex-end;background:#f7efe9; }
+.quad.tl span{ color:#3f9e6b; }
+.matrix::before,.matrix::after{ content:'';position:absolute;background:var(--line); }
+.matrix::before{ left:50%;top:0;bottom:0;width:1px; }
+.matrix::after{ top:50%;left:0;right:0;height:1px; }
+.pt { position:absolute;width:24px;height:24px;border-radius:50%;transform:translate(-50%,50%);
+  display:grid;place-items:center;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,.3);border:2px solid #fff; }
+.ptn { font-size:11px;font-weight:800; }
+.ptn.sm { position:static;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;color:#fff;flex:none;transform:none;border:none; }
+.axis { position:absolute;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px; }
+.axis.x { bottom:0;left:50%;transform:translateX(-50%); }
+.axis.y { left:-2px;top:50%;transform:rotate(-90deg) translateX(50%);transform-origin:left; }
+.quickbox { background:#eaf3ee;border:1px solid #cfe5d8;border-radius:11px;padding:14px 16px;margin-bottom:20px; }
+.quickbox strong{ color:#2c7a55;font-size:14px; }
+.quickbox ul{ margin:9px 0 0;padding-left:18px; }
+.quickbox li{ font-size:13.5px;margin-bottom:3px; }
+.quickbox em{ color:var(--muted);font-style:normal; }
+
+.ideialist { display:flex;flex-direction:column;gap:9px; }
+.ideialistrow { display:flex;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;align-items:flex-start; }
+.ill { flex:1;min-width:0; }
+.ill strong{ font-size:14px;display:block; }
+.illsub { font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:6px;margin:2px 0; }
+.ill p{ margin:4px 0 0;font-size:13px;color:#4a463c;line-height:1.5; }
+.illmeta{ display:flex;flex-direction:column;gap:4px;align-items:flex-end; }
+
+/* painel */
+.kpis { display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:24px; }
+.kpi { background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px 16px;display:flex;flex-direction:column;gap:3px; }
+.kpin { font-family:'Fraunces',serif;font-size:32px;font-weight:600;color:var(--accent);line-height:1; }
+.kpil { font-size:12.5px;color:var(--muted);font-weight:600; }
+.panelgrid { display:grid;grid-template-columns:1fr 1fr;gap:18px; }
+@media (max-width:680px){ .panelgrid{grid-template-columns:1fr;} }
+.panelbox { background:var(--card);border:1px solid var(--line);border-radius:13px;padding:18px; }
+.panelbox h3 { font-size:15px;margin-bottom:14px; }
+.barrow { display:flex;align-items:center;gap:10px;margin-bottom:10px; }
+.barlb { font-size:12.5px;width:92px;flex:none;color:#4a463c;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.bartrack { flex:1;height:9px;background:#0000000d;border-radius:20px;overflow:hidden; }
+.bar { height:100%;border-radius:20px;transition:width .4s; min-width:2px; }
+.barval { font-size:12px;font-weight:700;color:var(--muted);width:22px;text-align:right; }
+
+/* tags maturidade/horas no header + status/eco */
+.mtag2 { font-size:10.5px;font-weight:700;border:1.5px solid;padding:2px 8px;border-radius:20px;white-space:nowrap; }
+.htag { font-size:10.5px;font-weight:700;color:var(--muted);background:#0000000d;padding:2px 8px;border-radius:20px;white-space:nowrap; }
+.mtag.eco { color:#2c7a55;background:#e7f3ec; }
+.mtag.rs { color:#14564a;background:#e3efe9; }
+.statuspill { border:none;color:#fff;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:20px;cursor:pointer;font-family:inherit; }
+.numfield input { font-family:inherit;font-size:14px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 9px;outline:none;width:100%; }
+.matpick { display:flex;gap:6px;flex-wrap:wrap; }
+.matbtn { border:1.5px solid var(--c);color:var(--c);background:transparent;padding:6px 12px;border-radius:8px;
+  font-size:12px;font-weight:700;cursor:pointer;font-family:inherit; }
+.matbtn.on { background:var(--c);color:#fff; }
+
+/* filtros */
+.filterbar { display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap; }
+.fsearch { flex:1;min-width:180px; }
+.filterbar input,.filterbar select { font-family:inherit;font-size:13px;color:var(--ink);
+  background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;outline:none; }
+.filterbar input:focus,.filterbar select:focus { border-color:var(--accent); }
+.fclear { display:flex;align-items:center;gap:5px;background:transparent;border:1px solid var(--line);color:var(--muted);
+  padding:7px 11px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit; }
+.colorlb { font-size:12.5px;font-weight:600;color:var(--muted); }
+.colorbtn { background:var(--card);border:1px solid var(--line);color:var(--muted);padding:7px 13px;border-radius:8px;
+  font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit; }
+.colorbtn.on { border-color:var(--accent);color:var(--accent);background:#e7f0ec; }
+
+/* roi summary + automação extras */
+.roisummary { display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px; }
+.roisummary > div { flex:1;min-width:150px;background:var(--card);border:1px solid var(--line);border-radius:13px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:3px; }
+.roin { font-family:'Fraunces',serif;font-size:24px;font-weight:600;color:var(--accent);line-height:1; }
+.roil { font-size:12px;color:var(--muted);font-weight:600; }
+.listhead { font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:6px 0 10px; }
+
+/* kanban */
+.page.wide { max-width:1100px; }
+.kanban { display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start; }
+@media (max-width:820px){ .kanban{grid-template-columns:repeat(2,1fr);} }
+@media (max-width:480px){ .kanban{grid-template-columns:1fr;} }
+.kcol { background:#efeadd80;border:1px solid var(--line);border-radius:12px;padding:8px;min-height:60px; }
+.kcolhead { display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:700;
+  padding:6px 6px 10px;border-top:3px solid;margin:-8px -8px 8px;border-radius:12px 12px 0 0;background:var(--card);padding-top:9px; }
+.kcard { background:var(--card);border:1px solid var(--line);border-left:3px solid;border-radius:9px;padding:10px;margin-bottom:8px; }
+.kcard strong { font-size:13px;display:block;margin-bottom:6px;line-height:1.3; }
+.kchip { color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px; }
+.kmeta { font-size:11.5px;color:#2c7a55;font-weight:600;margin:7px 0; }
+.kfields { display:flex;flex-direction:column;gap:5px;margin-bottom:7px; }
+.kfields input { font-family:inherit;font-size:12px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:5px 7px;outline:none; }
+.kmove { display:flex;gap:5px; }
+.kmove button { flex:1;background:#efeadd;border:none;border-radius:6px;padding:5px;cursor:pointer;font-size:13px;color:var(--ink); }
+.kmove button:disabled { opacity:.35;cursor:default; }
+.kempty { text-align:center;color:#bdb6a4;font-size:13px;margin:8px 0; }
+
+/* custo + heatmap */
+.custobox { display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);
+  border-radius:12px;padding:12px 16px;margin-bottom:18px;font-size:13.5px;font-weight:600;color:var(--muted); }
+.custobox input { font-family:inherit;font-size:15px;font-weight:700;color:var(--ink);width:90px;
+  background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 10px;outline:none; }
+.custohint { color:var(--accent);font-weight:700; }
+.heat { display:flex;flex-direction:column;gap:6px; }
+.heatrow { display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr;gap:8px;align-items:center; }
+.heathead .heatcol { font-size:11px;font-weight:700;text-align:center;text-transform:uppercase;letter-spacing:.4px; }
+.heatlb { font-size:13px;font-weight:600;color:#4a463c;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.heatcell { text-align:center;font-size:13px;font-weight:700;padding:9px 0;border-radius:7px;border:1px solid var(--line); }
+
+/* drag, status de projeto, mover ao topo */
+.grip { display:grid;place-items:center;color:#c3bca9;cursor:grab;width:18px;flex:none;margin:-2px 0 -2px -4px; }
+.grip:active { cursor:grabbing; }
+.grip:hover { color:var(--accent); }
+.card.over { box-shadow:0 0 0 2px var(--accent) inset; }
+.statuspill.etst { margin-right:2px; }
+.topbtn { display:grid;place-items:center;background:transparent;border:none;color:#bdb6a4;
+  width:28px;height:28px;border-radius:7px;cursor:pointer;transition:.12s; }
+.topbtn:hover { color:var(--accent);background:#e7f0ec; }
+.statpick { display:flex;gap:6px;flex-wrap:wrap; }
+.statbtn { border:1.5px solid var(--c);color:var(--c);background:transparent;padding:6px 11px;border-radius:8px;
+  font-size:12px;font-weight:700;cursor:pointer;font-family:inherit; }
+.statbtn.on { background:var(--c);color:#fff; }
+.field select { font-family:inherit;font-size:14px;color:var(--ink);background:#fff;border:1px solid var(--line);
+  border-radius:8px;padding:8px 10px;outline:none; }
+.field select:focus { border-color:var(--accent); }
+.kanban.k5 { grid-template-columns:repeat(5,1fr); }
+@media (max-width:980px){ .kanban.k5{grid-template-columns:repeat(3,1fr);} }
+@media (max-width:680px){ .kanban.k5{grid-template-columns:repeat(2,1fr);} }
+@media (max-width:460px){ .kanban.k5{grid-template-columns:1fr;} }
+.kcard { cursor:grab; }
+.kcard:active { cursor:grabbing; }
+.kcol.drop { outline:2px dashed transparent; }
+.kcol.drop:hover { outline-color:var(--accent);outline-offset:2px;border-radius:12px; }
+.rmhint { font-size:12px;color:var(--muted);margin-left:auto; }
+
+/* esteira de status (pipeline) */
+.pipeline { background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:16px; }
+.pipehead { display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px;flex-wrap:wrap; }
+.pipetitle { font-size:13px;font-weight:700;color:var(--ink); }
+.pipeprog { font-size:12.5px;font-weight:700;color:var(--accent); }
+.piperow { display:flex;align-items:stretch;gap:6px;overflow-x:auto;padding-bottom:4px; }
+.pipestage { flex:1;min-width:138px;background:#fbf9f4;border:1px solid var(--line);border-top:3px solid;border-radius:10px;padding:9px; }
+.pipestagehd { display:flex;justify-content:space-between;align-items:center;font-size:11.5px;font-weight:700;margin-bottom:8px; }
+.pipect { font-size:11px;color:var(--muted);background:#0000000d;padding:1px 7px;border-radius:20px; }
+.pipechips { display:flex;flex-direction:column;gap:5px; }
+.pipechip { text-align:left;color:#fff;border:none;border-radius:7px;padding:6px 8px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit;line-height:1.25; }
+.pipechip:hover { filter:brightness(1.08); }
+.pipeempty { color:#c3bca9;font-size:13px;text-align:center;padding:4px; }
+.pipearrow { align-self:center;color:#bdb6a4;font-size:18px;flex:none; }
+
+/* histórico de status */
+.histbox { margin-top:12px;border-top:1px solid var(--line);padding-top:11px; }
+.histtitle { font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:9px; }
+.histlist { list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:0; }
+.histlist li { display:flex;align-items:center;gap:10px;position:relative;padding:5px 0 5px 4px; }
+.histlist li::before { content:"";position:absolute;left:9px;top:0;bottom:0;width:2px;background:var(--line); }
+.histlist li:first-child::before { top:50%; }
+.histlist li:last-child::before { bottom:50%; }
+.histdot { width:12px;height:12px;border-radius:50%;flex:none;z-index:1;border:2px solid var(--card); }
+.histlabel { font-size:13px;font-weight:600;color:var(--ink);flex:1; }
+.histdate { font-size:11.5px;color:var(--muted); }
+
+@media print {
+  .topbar .tools,.viewnav,.rail,.cardactions,.ideiaform,.del,.addetapa,.canvastabs,.filterbar,.kmove,.kfields{ display:none !important; }
+  .card{ break-inside:avoid; }
+}
+`;
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(MapaProcessos));
+
+</script>
+</body>
+</html>
